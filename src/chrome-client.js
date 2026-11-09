@@ -1863,6 +1863,10 @@ function collectAnnotationMarks() {
     });
   });
   queued.forEach((item, index) => {
+    // Plain messages, whiteboard notes, and layout-warning batches carry a selector from their
+    // origin element but are not annotations: planting a badge for them on the artifact that
+    // vanishes once they send would flash a mark that never was one.
+    if (item?.tag === "message" || item?.tag === "whiteboard" || item?.tag === "layout-warnings") return;
     const selector = item?.target?.selector || item?.selector;
     if (!selector) return;
     const pid = promptIdentity(item);

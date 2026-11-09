@@ -8770,6 +8770,26 @@ test("saving a queued note with its words cleared removes it", async () => {
   assert.deepEqual(chrome.queued(), []);
 });
 
+test("queued plain messages never become artifact marks", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      uid: "m1",
+      selector: "html > body",
+      tag: "message",
+      text: "Kurzer Hinweis",
+      prompt: "Bitte beim naechsten Durchlauf beruecksichtigen.",
+    },
+  });
+  const marksMessage = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1);
+  assert.deepEqual(
+    Array.from(marksMessage?.marks || [], (mark) => mark.selector),
+    [],
+    "a plain message note must not plant a badge on the artifact",
+  );
+});
+
 test("clearing a text-range comment keeps the queued marker", async () => {
   const chrome = await createChromeHarness();
   chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: identicalProjectionNote(0) });
