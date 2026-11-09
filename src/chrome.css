@@ -114,6 +114,11 @@ body {
   width: 100%;
   height: 100%;
 }
+/* Without its own overflow the browser propagates the body's value to the viewport, where `clip`
+   computes back to `hidden` and programmatic scrolling can still shift the app sideways. */
+html {
+  overflow: hidden;
+}
 body {
   background: var(--bg);
   color: var(--fg);

@@ -3541,6 +3541,7 @@ test("chrome.css keeps anchor labels shrinkable so the panel cannot overflow the
 test("chrome.css never allows a horizontally scrollable document body", async () => {
   const css = await chromeCssSource();
   assert.match(css, /body\{[^}]*overflow:hidden[^}]*overflow:clip[^}]*\}/);
+  assert.match(css, /html\{[^}]*overflow:hidden[^}]*\}/, "the viewport itself never propagates body scroll");
 });
 
 test("/design serves local Tailwind and DaisyUI artifact assets", async () => {
