@@ -131,6 +131,18 @@ function createElement(tag) {
       element.shadowRoot = createElement("shadow-root");
       return element.shadowRoot;
     },
+    getContext(kind) {
+      if (kind !== "2d" || String(tag).toLowerCase() !== "canvas") return null;
+      // A real canvas converts any fillStyle syntax (oklch, lab, color()) into sRGB pixels;
+      // the stub models that with a fixed dark pixel so the fallback path stays observable.
+      return {
+        fillStyle: "",
+        fillRect() {},
+        getImageData() {
+          return { data: [19, 22, 31, 255] };
+        },
+      };
+    },
   };
   return element;
 }
@@ -543,6 +555,24 @@ test("done still skips a header that carries no heading-and-prose pairing", () =
   const lead = appendTo(banner, cell("p", "Nur ein Banner-Hinweis"));
   banner.querySelectorAll = (query) =>
     query === '[data-lavish-done="true"]' ? [lead].filter((el) => el.getAttribute("data-lavish-done") === "true") : [];
+  sdk.setDocumentQueryAll((query) =>
+    query === '[data-lavish-done="true"]' ? [lead].filter((el) => el.getAttribute("data-lavish-done") === "true") : [],
+  );
+  const key = (keyName, shiftKey = false) =>
+    sdk.trigger("keydown", { key: keyName, shiftKey, target: sdk.body, preventDefault() {} });
+  sdk.trigger("mousemove", { target: lead, clientX: 12, clientY: 12 });
+  key("D", true);
+  assert.equal(banner.getAttribute("data-lavish-done"), null);
+  assert.equal(lead.getAttribute("data-lavish-done"), "true");
+});
+
+test("done skips a header that carries a heading but no lead paragraph", () => {
+  const sdk = bootSdk();
+  const banner = appendTo(sdk.body, createElement("header"));
+  banner.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1018, bottom: 120, width: 1018, height: 120 });
+  banner.querySelector = (query) => (query.startsWith("h1") ? createElement("h1") : null);
+  const lead = appendTo(banner, cell("p", "Nur ein Banner-Hinweis"));
+  banner.querySelectorAll = () => [];
   sdk.setDocumentQueryAll((query) =>
     query === '[data-lavish-done="true"]' ? [lead].filter((el) => el.getAttribute("data-lavish-done") === "true") : [],
   );
@@ -1079,6 +1109,64 @@ test("a normal-sized element mark keeps its tinted box", () => {
     String(rects[0].className),
     /is-document-wide/,
     "a 100x30 card is far from document-wide and keeps its tint",
+  );
+});
+
+test("an element mark's box does not swallow clicks on its children", () => {
+  const sdk = bootSdk({ runAnimationFrames: true, initialAnnotate: false });
+  const card = appendTo(sdk.body, cell("div", "Card words"));
+  card.rectTop = 40;
+  const bySelector = { "#card": card };
+  sdk.setDocumentQueryAll((query) => (bySelector[query] ? [bySelector[query]] : []));
+  sdk.setCreateRange(() => ({
+    setStart() {},
+    setEnd() {},
+    selectNodeContents() {},
+    getClientRects: () => [],
+    getBoundingClientRect: () => null,
+  }));
+  sdk.sendChromeMessage({
+    type: "lavish:annotationMarks",
+    items: [
+      {
+        id: "card-mark",
+        selector: "#card",
+        kind: "element",
+        state: "sent",
+        hasComment: true,
+        badgeNumber: 1,
+        text: "",
+      },
+    ],
+  });
+  let prevented = false;
+  let stopped = false;
+  sdk.trigger("mousemove", { target: card, clientX: 20, clientY: 50 });
+  sdk.trigger("click", {
+    target: card,
+    clientX: 20,
+    clientY: 50,
+    preventDefault() {
+      prevented = true;
+    },
+    stopPropagation() {
+      stopped = true;
+    },
+  });
+  assert.equal(prevented, false, "explore clicks inside an element mark stay native for the artifact");
+  assert.equal(stopped, false, "the click is not stopped from reaching the artifact's own handlers");
+});
+
+test("a dark surface in modern color syntax still gets the light scrollbar thumb", () => {
+  const sdk = bootSdk({ runAnimationFrames: true });
+  sdk.documentElement.computedStyle = { backgroundColor: "oklch(0.23 0.04 264)" };
+  sdk.sendChromeMessage({ type: "lavish:setAnnotationMode", enabled: false });
+  sdk.runTimers();
+  const style = sdk.head.children.find((el) => el.id === "lavish-scrollbar-style");
+  assert.match(
+    String(style?.textContent || ""),
+    /background:#f3f3f4/,
+    "oklch backgrounds resolve through the canvas fallback, so a dark page keeps the light thumb",
   );
 });
 

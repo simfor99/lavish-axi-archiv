@@ -1795,7 +1795,10 @@ export function createArtifactSdk(
   function findRenderedTextMarkAtPoint(x, y, pad = 0) {
     return (
       renderedMarkRects
-        .filter((entry) => pointInRect(entry.rect, x, y, pad))
+        // An element mark's box covers everything inside its container; hit-testing through it
+        // would swallow clicks meant for the artifact's own handlers and for annotating a child.
+        // Element marks stay reachable through their badge, arrows, and the conversation.
+        .filter((entry) => !entry.elementBox && pointInRect(entry.rect, x, y, pad))
         .sort((a, b) => a.rect.width * a.rect.height - b.rect.width * b.rect.height || b.order - a.order)[0]?.mark ||
       null
     );
@@ -1865,14 +1868,37 @@ export function createArtifactSdk(
   // and keep the artifact's own scrollbar styling untouched.
   // The thumb adapts to the surface: a bright artifact (white customer surfaces) gets a dark
   // grey thumb, a dark or warm surface keeps the light #f3f3f4 thumb with its fine outline.
+  // Tailwind v4 and friends hand back oklch()/lab()/color() backgrounds, which the rgb() regex
+  // above cannot read. A canvas fillStyle converts any color syntax into sRGB pixels, so one
+  // painted pixel answers what the eye would see. Anything the canvas cannot do stays bright.
+  function canvasFallbackRgb(raw) {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const ctx = canvas.getContext?.("2d");
+      if (!ctx) return null;
+      ctx.fillStyle = raw;
+      ctx.fillRect(0, 0, 1, 1);
+      const px = ctx.getImageData(0, 0, 1, 1).data;
+      if (!px || px[3] === 0) return null;
+      return [px[0], px[1], px[2]];
+    } catch {
+      return null;
+    }
+  }
+
   function effectiveBackgroundRgb() {
     for (const el of [document.documentElement, document.body]) {
       if (!el) continue;
-      const match = String(getComputedStyle(el).backgroundColor || "").match(
-        /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/,
-      );
+      const raw = String(getComputedStyle(el).backgroundColor || "");
+      const match = raw.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/);
       if (match && (match[4] === undefined || Number(match[4]) > 0)) {
         return [Number(match[1]), Number(match[2]), Number(match[3])];
+      }
+      if (!match && raw && raw !== "transparent") {
+        const rgb = canvasFallbackRgb(raw);
+        if (rgb) return rgb;
       }
     }
     return [255, 255, 255];
@@ -2307,7 +2333,7 @@ export function createArtifactSdk(
         position(el, rect);
         root.appendChild(el);
         if (done) renderedDoneRects.push({ item, rect });
-        else renderedMarkRects.push({ mark: item, rect, order });
+        else renderedMarkRects.push({ mark: item, rect, order, elementBox: isElementMark(item) });
       }
       const last = badgeRect || rects.at(-1);
       if (!last) return;
