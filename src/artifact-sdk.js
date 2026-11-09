@@ -1911,8 +1911,9 @@ export function createArtifactSdk(
   }
 
   function scrollbarStyleText() {
-    const thumb = isBrightSurface() ? "#4b4b52" : "#f3f3f4";
-    const outline = isBrightSurface() ? "" : "border:1px solid rgba(0,0,0,.28);";
+    const bright = isBrightSurface();
+    const thumb = bright ? "#4b4b52" : "#f3f3f4";
+    const outline = bright ? "" : "border:1px solid rgba(0,0,0,.28);";
     return `::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:${thumb};border-radius:8px;${outline}background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:${thumb} transparent}`;
   }
 
