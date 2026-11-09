@@ -1242,7 +1242,12 @@ export function createArtifactSdk(
     "[data-lavish-copy],article,p,li,h1,h2,h3,h4,h5,h6,blockquote,pre,figcaption,td,th,.card,.metric,.notice,.source,.callout,.panel,.review-card,.report-card,.evidence-card,.src-card,.sec-card,.meta-block,.dp-card,.tr-card,.source-banner,.sub,.island";
 
   function copyTargetFor(el) {
-    if (!(el instanceof Element) || isLavishUi(el)) return null;
+    if (
+      !(el instanceof Element) ||
+      isLavishUi(el) ||
+      el.closest?.("[data-lavish-no-copy],.glass-showcase-canvas,.psc-card,.psc-page-group")
+    )
+      return null;
     const matches = [];
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       if (!node.matches?.(COPY_TARGET_SELECTOR) || isLavishUi(node)) continue;
@@ -1554,10 +1559,20 @@ export function createArtifactSdk(
     return chain.join("|");
   }
 
+  // A document intro header (a `<header>` wrapping the page's h1 together with its lead prose)
+  // is one content unit, not page chrome: `done-parent` has to be able to grey the heading along
+  // with the paragraph below it. Headers without that heading-and-prose pairing stay excluded so
+  // site banners and nav strips never become done boxes.
+  function isIntroHeader(node) {
+    if (!/^header$/i.test(node?.tagName || "") || typeof node?.querySelector !== "function") return false;
+    return Boolean(node.querySelector("h1,h2,h3,h4,h5,h6") && node.querySelector("p"));
+  }
+
   function isExcludedDoneTag(node) {
     return (
       !node?.tagName ||
-      /^(html|body|main|nav|header|footer|h[1-6]|summary|legend|caption|script|style|svg)$/i.test(node.tagName) ||
+      (/^(html|body|main|nav|header|footer|h[1-6]|summary|legend|caption|script|style|svg)$/i.test(node.tagName) &&
+        !isIntroHeader(node)) ||
       node.getAttribute?.("role") === "heading" ||
       isLavishUi(node)
     );
@@ -1715,6 +1730,36 @@ export function createArtifactSdk(
     return found.length === 1 ? found[0] : null;
   }
 
+  // An element mark (a right-click annotation made without a text selection) carries only its
+  // container selector. Resolve it to a range spanning that container so the badge, the arrows
+  // and the reveal treat it exactly like a marked passage. Text marks never take this path:
+  // their selector names a container, and the text itself has to be matched, never assumed.
+  function resolveElementMarkTarget(item) {
+    const selector = item?.target?.selector || item?.selector;
+    if (!selector) return null;
+    const matches = queryAll(selector);
+    if (matches.length !== 1) return null;
+    const element = matches[0];
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return { anchor: element, range };
+  }
+
+  // Element marks stand for a whole container and share one definition across every consumer:
+  // resolving, overlap checks, reading order, focus, and drawing all branch on this predicate.
+  function isElementMark(item) {
+    return Boolean(item?.kind && item.kind !== "text-range");
+  }
+
+  // Every consumer of a mark resolves it through the same path its kind dictates: text marks
+  // must match their text (never a bare selector), element marks span the container their
+  // selector names. Diverging resolvers made an element mark's arrow render but jump nowhere.
+  function resolveMarkTarget(item) {
+    return isElementMark(item)
+      ? resolveElementMarkTarget(item)
+      : resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
+  }
+
   function getScrollAncestors(anchor) {
     const result = [];
     for (let p = anchor; p && p !== document.documentElement; p = p.parentElement) {
@@ -1750,7 +1795,10 @@ export function createArtifactSdk(
   function findRenderedTextMarkAtPoint(x, y, pad = 0) {
     return (
       renderedMarkRects
-        .filter((entry) => pointInRect(entry.rect, x, y, pad))
+        // An element mark's box covers everything inside its container; hit-testing through it
+        // would swallow clicks meant for the artifact's own handlers and for annotating a child.
+        // Element marks stay reachable through their badge, arrows, and the conversation.
+        .filter((entry) => !entry.elementBox && pointInRect(entry.rect, x, y, pad))
         .sort((a, b) => a.rect.width * a.rect.height - b.rect.width * b.rect.height || b.order - a.order)[0]?.mark ||
       null
     );
@@ -1778,6 +1826,9 @@ export function createArtifactSdk(
   function findOverlappingMarks(range) {
     const overlaps = [];
     for (const mark of annotationMarks) {
+      // Element marks span whole containers; treating their excerpt as text would let a fresh
+      // selection swallow the element mark instead of creating its own text mark.
+      if (isElementMark(mark)) continue;
       const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
       if (resolved && rangesOverlap(resolved.range, range)) {
         overlaps.push({ mark, resolved });
@@ -1810,6 +1861,82 @@ export function createArtifactSdk(
     style.textContent =
       '[data-lavish-done="true"]{opacity:.36!important;filter:grayscale(.85)!important;transition:opacity 120ms ease,filter 120ms ease}';
     (document.head || document.documentElement).appendChild(style);
+  }
+
+  // The OS scrollbar thumb barely separates from warm artifact backgrounds, so the review
+  // surface restyles it for contrast inside the sandboxed frame only. Exports strip the SDK
+  // and keep the artifact's own scrollbar styling untouched.
+  // The thumb adapts to the surface: a bright artifact (white customer surfaces) gets a dark
+  // grey thumb, a dark or warm surface keeps the light #f3f3f4 thumb with its fine outline.
+  // Tailwind v4 and friends hand back oklch()/lab()/color() backgrounds, which the rgb() regex
+  // above cannot read. A canvas fillStyle converts any color syntax into sRGB pixels, so one
+  // painted pixel answers what the eye would see. Anything the canvas cannot do stays bright.
+  function canvasFallbackRgb(raw) {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const ctx = canvas.getContext?.("2d");
+      if (!ctx) return null;
+      ctx.fillStyle = raw;
+      ctx.fillRect(0, 0, 1, 1);
+      const px = ctx.getImageData(0, 0, 1, 1).data;
+      if (!px || px[3] === 0) return null;
+      return [px[0], px[1], px[2]];
+    } catch {
+      return null;
+    }
+  }
+
+  function effectiveBackgroundRgb() {
+    for (const el of [document.documentElement, document.body]) {
+      if (!el) continue;
+      const raw = String(getComputedStyle(el).backgroundColor || "");
+      const match = raw.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/);
+      if (match && (match[4] === undefined || Number(match[4]) > 0)) {
+        return [Number(match[1]), Number(match[2]), Number(match[3])];
+      }
+      if (!match && raw && raw !== "transparent") {
+        const rgb = canvasFallbackRgb(raw);
+        if (rgb) return rgb;
+      }
+    }
+    return [255, 255, 255];
+  }
+
+  function isBrightSurface() {
+    const [r, g, b] = effectiveBackgroundRgb();
+    const channel = (c) => (c <= 0.03928 ? c / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b) > 0.75;
+  }
+
+  function scrollbarStyleText() {
+    const bright = isBrightSurface();
+    const thumb = bright ? "#4b4b52" : "#f3f3f4";
+    const outline = bright ? "" : "border:1px solid rgba(0,0,0,.28);";
+    return `::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-thumb{background:${thumb};border-radius:8px;${outline}background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{scrollbar-color:${thumb} transparent}`;
+  }
+
+  function ensureScrollbarStyle() {
+    let style = document.getElementById("lavish-scrollbar-style");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "lavish-scrollbar-style";
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.textContent = scrollbarStyleText();
+  }
+
+  function watchScrollbarSurface() {
+    if (typeof MutationObserver !== "function") return;
+    let timer = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(ensureScrollbarStyle, 80);
+    });
+    for (const el of [document.documentElement, document.body]) {
+      if (el) observer.observe(el, { attributes: true, attributeFilter: ["class", "style"], subtree: false });
+    }
   }
 
   function normalizeDoneElement(el) {
@@ -2052,7 +2179,12 @@ export function createArtifactSdk(
   // Marks top to bottom as the reader sees them, commented or not: the order the arrows step through.
   function marksInReadingOrder(resolvedMarks) {
     return resolvedMarks
-      .map(({ item, resolved }) => ({ item, rect: [...resolved.range.getClientRects()][0] }))
+      .map(({ item, resolved }) => ({
+        item,
+        rect: isElementMark(item)
+          ? resolved.anchor?.getBoundingClientRect?.() || [...resolved.range.getClientRects()][0]
+          : [...resolved.range.getClientRects()][0],
+      }))
       .filter(({ rect }) => rect)
       .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)
       .map(({ item }) => item);
@@ -2110,10 +2242,17 @@ export function createArtifactSdk(
 
   // Brings one mark's words to the middle of the view and selects it. With `syncChat` the
   // conversation highlights the matching note too, the same way a click on the mark does.
+  // An element mark targets the element box, not its text range: an empty container's range is a
+  // null rectangle and would scroll the page to its top instead of to the container.
   function focusAnnotationMark(mark, { syncChat = false } = {}) {
-    const resolved = resolveTextTarget(mark.target || { text: mark.text, selector: mark.selector }, mark.selector);
+    const resolved = resolveMarkTarget(mark);
     if (!resolved) return false;
-    scrollIntoCenter(resolved.anchor, () => resolved.range.getBoundingClientRect(), { includeAnchor: true });
+    const elementMark = isElementMark(mark);
+    scrollIntoCenter(
+      resolved.anchor,
+      () => (elementMark ? resolved.anchor.getBoundingClientRect() : resolved.range.getBoundingClientRect()),
+      { includeAnchor: !elementMark },
+    );
     selectedMarkId = mark.id;
     renderOverlays();
     if (syncChat) {
@@ -2146,7 +2285,7 @@ export function createArtifactSdk(
     }
     const resolvedMarks = [];
     annotationMarks.forEach((item, index) => {
-      const resolved = resolveTextTarget(item.target || { text: item.text, selector: item.selector }, item.selector);
+      const resolved = resolveMarkTarget(item);
       if (resolved) resolvedMarks.push({ item, resolved, index });
     });
     const markOrder = marksInReadingOrder(resolvedMarks);
@@ -2163,9 +2302,30 @@ export function createArtifactSdk(
     const navPlacements = [];
     function draw(item, resolved, order, done) {
       const isSelected = !done && item.id === selectedMarkId;
-      const rects = [...resolved.range.getClientRects()]
-        .map((rect) => clipRectToScrollAncestors(rect, resolved.anchor))
-        .filter(Boolean);
+      let rects = isElementMark(item)
+        ? []
+        : [...resolved.range.getClientRects()]
+            .map((rect) => clipRectToScrollAncestors(rect, resolved.anchor))
+            .filter(Boolean);
+      // An element mark stands for its whole element, padding included, so it always draws and
+      // hit-tests through the element box; a text mark keeps its line-range geometry. An empty
+      // container simply has no range rectangles, and the box covers it the same way — and the
+      // range is not even measured for element marks, because a container range can hand back
+      // hundreds of rectangles that are all replaced by the one element box right after.
+      // An element spanning nearly the whole viewport would tint or frame every visible line
+      // (a body-wide note once turned whole surfaces into unreadable "yellow mush"), so such a
+      // mark paints no rect at all: its badge and arrows still anchor to the top of the box.
+      let badgeRect = null;
+      if (isElementMark(item) && resolved.anchor) {
+        const rawBox = resolved.anchor.getBoundingClientRect();
+        const box = rawBox && clipRectToScrollAncestors(rawBox, resolved.anchor);
+        if (box) {
+          const documentWide =
+            rawBox.width >= 0.9 * (window.innerWidth || 0) && rawBox.height >= 0.9 * (window.innerHeight || 0);
+          if (documentWide) badgeRect = box;
+          else rects = [box];
+        }
+      }
       for (const rect of rects) {
         const el = document.createElement("div");
         el.className = done
@@ -2174,9 +2334,9 @@ export function createArtifactSdk(
         position(el, rect);
         root.appendChild(el);
         if (done) renderedDoneRects.push({ item, rect });
-        else renderedMarkRects.push({ mark: item, rect, order });
+        else renderedMarkRects.push({ mark: item, rect, order, elementBox: isElementMark(item) });
       }
-      const last = rects.at(-1);
+      const last = badgeRect || rects.at(-1);
       if (!last) return;
       const button = document.createElement("button");
       button.type = "button";
@@ -3772,7 +3932,11 @@ export function createArtifactSdk(
     // without the source check the artifact could post to itself and drive the SDK.
     if (event.source !== parent) return;
     const msg = event.data || {};
-    if (msg.type === "lavish:setAnnotationMode") setAnnotationMode(msg.enabled);
+    if (msg.type === "lavish:setAnnotationMode") {
+      setAnnotationMode(msg.enabled);
+      // A mode flip can come with a theme flip; re-measure the scrollbar surface cheaply.
+      ensureScrollbarStyle();
+    }
     if (msg.type === "lavish:selectionShortcut") executeReviewShortcut(msg.action, null);
     if (msg.type === "lavish:annotationMarks") {
       const list = Array.isArray(msg.marks) ? msg.marks : Array.isArray(msg.items) ? msg.items : [];
@@ -4275,6 +4439,8 @@ export function createArtifactSdk(
   );
 
   setAnnotationMode(annotationMode);
+  ensureScrollbarStyle();
+  watchScrollbarSurface();
   installActiveNavigation();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startLayoutAudit, { once: true });

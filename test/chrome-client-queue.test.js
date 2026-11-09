@@ -8712,11 +8712,14 @@ test("clicking a queued note opens it for editing and reveals its element", asyn
   chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
 
   assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Make this heading bigger</);
+  // Element notes are marks now, so the reveal goes through the artifact's mark instead of a
+  // bare element lookup.
+  const [prompt] = chrome.queued();
   assert.deepEqual(
     JSON.parse(
-      JSON.stringify(chrome.postedToFrame.filter((message) => message.type === "lavish:revealElement").at(-1)),
+      JSON.stringify(chrome.postedToFrame.filter((message) => message.type === "lavish:revealAnnotationMark").at(-1)),
     ),
-    { type: "lavish:revealElement", selector: "main > h2" },
+    { type: "lavish:revealAnnotationMark", id: prompt.prompt_id, selector: "main > h2" },
   );
 });
 
@@ -8767,6 +8770,26 @@ test("saving a queued note with its words cleared removes it", async () => {
   assert.deepEqual(chrome.queued(), []);
 });
 
+test("queued plain messages never become artifact marks", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: {
+      uid: "m1",
+      selector: "html > body",
+      tag: "message",
+      text: "Kurzer Hinweis",
+      prompt: "Bitte beim naechsten Durchlauf beruecksichtigen.",
+    },
+  });
+  const marksMessage = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1);
+  assert.deepEqual(
+    Array.from(marksMessage?.marks || [], (mark) => mark.selector),
+    [],
+    "a plain message note must not plant a badge on the artifact",
+  );
+});
+
 test("clearing a text-range comment keeps the queued marker", async () => {
   const chrome = await createChromeHarness();
   chrome.sendFrameMessage({ type: "lavish:queuePrompt", prompt: identicalProjectionNote(0) });
@@ -8813,6 +8836,29 @@ test("text markers retain distinct full targets through transcript and page relo
     JSON.parse(JSON.stringify(marks.map((mark) => mark.target))),
     prompts.map((item) => item.target),
   );
+});
+
+test("an element annotation from a right-click joins the marks with a badge", async () => {
+  const chrome = await createChromeHarness();
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Was ist hier genau gemeint?", selector: "main > div.card", tag: "div", text: "Card words" },
+  });
+  let marks = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1).marks;
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].kind, "element");
+  assert.equal(marks[0].selector, "main > div.card");
+  assert.equal(marks[0].hasComment, true);
+  assert.equal(marks[0].badgeNumber, 1);
+  assert.equal(marks[0].state, "queued");
+
+  const [prompt] = chrome.queued();
+  const chat = [chatEntryForPrompt(prompt, "2026-11-04")];
+  chrome.eventSource().listeners.get("chat-sync")({ data: JSON.stringify({ chat }) });
+  marks = chrome.postedToFrame.filter((message) => message.type === "lavish:annotationMarks").at(-1).marks;
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].state, "sent");
+  assert.equal(marks[0].kind, "element");
 });
 
 test("activating queued and sent marks opens their edit, transcript, or comment card", async () => {

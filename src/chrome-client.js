@@ -1847,7 +1847,9 @@ function collectAnnotationMarks() {
             : anchor.label === "cell"
               ? "table-cell"
               : "element");
-      if (kind !== "text-range") return;
+      // Element anchors (a right-click annotation without a text selection) mark too: without
+      // them the annotation has no symbol and the mark arrows skip it entirely.
+      if (kind !== "text-range" && kind !== "element") return;
       marks.push({
         id,
         state: "sent",
@@ -1861,6 +1863,10 @@ function collectAnnotationMarks() {
     });
   });
   queued.forEach((item, index) => {
+    // Plain messages, whiteboard notes, and layout-warning batches carry a selector from their
+    // origin element but are not annotations: planting a badge for them on the artifact that
+    // vanishes once they send would flash a mark that never was one.
+    if (item?.tag === "message" || item?.tag === "whiteboard" || item?.tag === "layout-warnings") return;
     const selector = item?.target?.selector || item?.selector;
     if (!selector) return;
     const pid = promptIdentity(item);
@@ -1870,7 +1876,7 @@ function collectAnnotationMarks() {
     const comment = String(item.prompt || "");
     const hasComment = Boolean(comment.trim()) || attachmentCount(item) > 0;
     const kind = target?.type || (item.tag === "text" ? "text-range" : "element");
-    if (kind !== "text-range") return;
+    if (kind !== "text-range" && kind !== "element") return;
     marks.push({
       id,
       state: "queued",
